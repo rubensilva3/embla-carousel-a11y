@@ -21,6 +21,19 @@ export type A11yPluginType = CreatePluginType<
 
 export type A11yPluginOptionsType = A11yPluginType["options"];
 
+const TABBABLE_DESCENDANT_SELECTOR = [
+  "a[href]",
+  "area[href]",
+  'input:not([disabled]):not([type="hidden"])',
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "button:not([disabled])",
+  "summary",
+  "[tabindex]",
+].join(", ");
+
+const PREVIOUS_TABINDEX_ATTRIBUTE = "data-embla-tabindex";
+
 class A11yPlugin implements A11yPluginType {
   readonly name = "a11y";
   readonly options: A11yPluginOptionsType;
@@ -61,30 +74,7 @@ class A11yPlugin implements A11yPluginType {
   update(): void {
     if (!this.embla) return;
 
-    const selectedIndex = this.embla.selectedScrollSnap();
-
-    // Update slide attributes
-    this.slideElements.forEach((slide, index) => {
-      // Set aria-hidden on non-visible slides
-      this.safeSetAttribute(
-        slide,
-        "aria-hidden",
-        index === selectedIndex ? "false" : "true",
-      );
-
-      // Update position in set if user hasn't set these
-      if (!this.userHasAttribute(slide, "aria-setsize")) {
-        this.safeSetAttribute(
-          slide,
-          "aria-setsize",
-          `${this.slideElements.length}`,
-        );
-      }
-
-      if (!this.userHasAttribute(slide, "aria-posinset")) {
-        this.safeSetAttribute(slide, "aria-posinset", `${index + 1}`);
-      }
-    });
+    this.updateSlideVisibility();
 
     // Announce current slide if enabled
     if (this.options.announceSlideChanges) {
@@ -113,6 +103,9 @@ class A11yPlugin implements A11yPluginType {
 
     // Remove live region
     this.liveRegion?.parentElement?.removeChild(this.liveRegion);
+    this.slideElements.forEach((slide) => {
+      this.updateSlideHiddenState(slide, false);
+    });
 
     this.embla = null;
     this.rootElement = null;
@@ -141,8 +134,6 @@ class A11yPlugin implements A11yPluginType {
         "aria-describedby",
         "aria-roledescription",
         "role",
-        "aria-setsize",
-        "aria-posinset",
       ].forEach((attr) => {
         if (element.hasAttribute(attr)) {
           attributes.add(attr);
@@ -235,6 +226,11 @@ class A11yPlugin implements A11yPluginType {
       this.safeSetAttribute(slide, "role", "group");
       this.safeSetAttribute(slide, "aria-roledescription", "slide");
 
+      if (slide.getAttribute("role") === "group") {
+        slide.removeAttribute("aria-setsize");
+        slide.removeAttribute("aria-posinset");
+      }
+
       // If slides don't have accessible names, set default
       if (!hasSlideLabel) {
         const defaultLabel = `Slide ${index + 1} of ${this.slideElements.length}`;
@@ -287,15 +283,97 @@ class A11yPlugin implements A11yPluginType {
     const handleSelect = (): void => {
       this.#onSlideChange();
     };
+    const handleSlidesInView = (): void => {
+      this.updateSlideVisibility();
+    };
 
     // Listen for slide changes
     this.embla.on("select", handleSelect);
+    this.embla.on("slidesInView", handleSlidesInView);
 
     // Add cleanup function
     this.cleanupFunctions.push(() => {
       if (this.embla) {
         this.embla.off("select", handleSelect);
+        this.embla.off("slidesInView", handleSlidesInView);
       }
+    });
+  }
+
+  /**
+   * Keep slide visibility aligned with Embla's in-view calculation
+   */
+  private updateSlideVisibility(): void {
+    if (!this.embla) return;
+
+    const visibleIndexes = new Set(this.embla.slidesInView());
+
+    this.slideElements.forEach((slide, index) => {
+      this.updateSlideHiddenState(slide, !visibleIndexes.has(index));
+    });
+  }
+
+  /**
+   * Update a slide's hidden state and tab order
+   */
+  private updateSlideHiddenState(slide: HTMLElement, isHidden: boolean): void {
+    const tabbableDescendants = this.getTabbableDescendants(slide);
+
+    if (isHidden) {
+      this.safeSetAttribute(slide, "aria-hidden", "true");
+      this.disableTabbableDescendants(tabbableDescendants);
+
+      return;
+    }
+
+    slide.removeAttribute("aria-hidden");
+    this.restoreTabbableDescendants(tabbableDescendants);
+  }
+
+  /**
+   * Find descendants that should be removed from or restored to the tab order
+   */
+  private getTabbableDescendants(slide: HTMLElement): HTMLElement[] {
+    return Array.from(
+      slide.querySelectorAll<HTMLElement>(TABBABLE_DESCENDANT_SELECTOR),
+    ).filter((element) => {
+      return (
+        element.tabIndex >= 0 ||
+        element.hasAttribute(PREVIOUS_TABINDEX_ATTRIBUTE)
+      );
+    });
+  }
+
+  /**
+   * Remove descendants from the tab order and remember their prior tabindex
+   */
+  private disableTabbableDescendants(descendants: HTMLElement[]): void {
+    descendants.forEach((element) => {
+      if (!element.hasAttribute(PREVIOUS_TABINDEX_ATTRIBUTE)) {
+        element.setAttribute(
+          PREVIOUS_TABINDEX_ATTRIBUTE,
+          element.getAttribute("tabindex") ?? "",
+        );
+      }
+
+      element.setAttribute("tabindex", "-1");
+    });
+  }
+
+  /**
+   * Restore tabindex values saved while the slide was hidden
+   */
+  private restoreTabbableDescendants(descendants: HTMLElement[]): void {
+    descendants.forEach((element) => {
+      const previousTabIndex = element.getAttribute(PREVIOUS_TABINDEX_ATTRIBUTE);
+
+      if (previousTabIndex === "") {
+        element.removeAttribute("tabindex");
+      } else if (previousTabIndex !== null) {
+        element.setAttribute("tabindex", previousTabIndex);
+      }
+
+      element.removeAttribute(PREVIOUS_TABINDEX_ATTRIBUTE);
     });
   }
 

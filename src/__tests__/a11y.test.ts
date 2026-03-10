@@ -59,6 +59,10 @@ describe("A11y Plugin", () => {
 
   it("should apply correct ARIA attributes to carousel elements", () => {
     embla = EmblaCarousel(container, {}, [A11y()]);
+    const a11yPlugin = embla.plugins().a11y;
+
+    vi.spyOn(embla, "slidesInView").mockReturnValue([0]);
+    a11yPlugin.update();
 
     // Check root element
     expect(container.getAttribute("role")).toBe("region");
@@ -72,12 +76,12 @@ describe("A11y Plugin", () => {
       expect(slide.getAttribute("aria-label")).toBe(
         `Slide ${index + 1} of ${slides.length}`,
       );
-      expect(slide.getAttribute("aria-setsize")).toBe(`${slides.length}`);
-      expect(slide.getAttribute("aria-posinset")).toBe(`${index + 1}`);
+      expect(slide.hasAttribute("aria-setsize")).toBe(false);
+      expect(slide.hasAttribute("aria-posinset")).toBe(false);
     });
 
     // First slide should be visible, others hidden
-    expect(slides[0].getAttribute("aria-hidden")).toBe("false");
+    expect(slides[0].hasAttribute("aria-hidden")).toBe(false);
     expect(slides[1].getAttribute("aria-hidden")).toBe("true");
     expect(slides[2].getAttribute("aria-hidden")).toBe("true");
   });
@@ -109,19 +113,98 @@ describe("A11y Plugin", () => {
   it("should update aria-hidden when slide changes", () => {
     embla = EmblaCarousel(container, {}, [A11y()]);
     const a11yPlugin = embla.plugins().a11y;
+    const slidesInView = vi.spyOn(embla, "slidesInView");
 
     // Initially first slide is visible
-    expect(slides[0].getAttribute("aria-hidden")).toBe("false");
+    slidesInView.mockReturnValue([0]);
+    a11yPlugin.update();
+    expect(slides[0].hasAttribute("aria-hidden")).toBe(false);
     expect(slides[1].getAttribute("aria-hidden")).toBe("true");
 
-    // Manually simulate changing to the second slide
-    // We need to mock this because scrollNext() doesn't work in jsdom/happy-dom
-    vi.spyOn(embla, "selectedScrollSnap").mockReturnValue(1);
+    // Manually simulate changing the visible slide
+    slidesInView.mockReturnValue([1]);
     a11yPlugin.update();
 
     // Now second slide should be visible
     expect(slides[0].getAttribute("aria-hidden")).toBe("true");
-    expect(slides[1].getAttribute("aria-hidden")).toBe("false");
+    expect(slides[1].hasAttribute("aria-hidden")).toBe(false);
+  });
+
+  it("should keep all slides in view exposed to assistive technology", () => {
+    embla = EmblaCarousel(container, {}, [A11y()]);
+    const a11yPlugin = embla.plugins().a11y;
+
+    vi.spyOn(embla, "slidesInView").mockReturnValue([0, 1]);
+    a11yPlugin.update();
+
+    expect(slides[0].hasAttribute("aria-hidden")).toBe(false);
+    expect(slides[1].hasAttribute("aria-hidden")).toBe(false);
+    expect(slides[2].getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("should remove hidden slide descendants from the tab order", () => {
+    slides[1].innerHTML = `
+      <a href="#hidden-link">Hidden Link</a>
+      <button type="button" tabindex="2">Hidden Button</button>
+    `;
+
+    embla = EmblaCarousel(container, {}, [A11y()]);
+    const a11yPlugin = embla.plugins().a11y;
+
+    vi.spyOn(embla, "slidesInView").mockReturnValue([0]);
+    a11yPlugin.update();
+
+    const hiddenLink = slides[1].querySelector("a")!;
+    const hiddenButton = slides[1].querySelector("button")!;
+
+    expect(slides[1].getAttribute("aria-hidden")).toBe("true");
+    expect(hiddenLink.getAttribute("tabindex")).toBe("-1");
+    expect(hiddenLink.getAttribute("data-embla-tabindex")).toBe("");
+    expect(hiddenButton.getAttribute("tabindex")).toBe("-1");
+    expect(hiddenButton.getAttribute("data-embla-tabindex")).toBe("2");
+  });
+
+  it("should restore descendant tabindex values when a slide becomes visible again", () => {
+    slides[1].innerHTML = `
+      <a href="#visible-link">Visible Link</a>
+      <button type="button" tabindex="2">Visible Button</button>
+    `;
+
+    embla = EmblaCarousel(container, {}, [A11y()]);
+    const a11yPlugin = embla.plugins().a11y;
+    const slidesInView = vi.spyOn(embla, "slidesInView");
+    const visibleLink = slides[1].querySelector("a")!;
+    const visibleButton = slides[1].querySelector("button")!;
+
+    slidesInView.mockReturnValue([0]);
+    a11yPlugin.update();
+
+    slidesInView.mockReturnValue([1]);
+    a11yPlugin.update();
+
+    expect(slides[1].hasAttribute("aria-hidden")).toBe(false);
+    expect(visibleLink.hasAttribute("tabindex")).toBe(false);
+    expect(visibleLink.hasAttribute("data-embla-tabindex")).toBe(false);
+    expect(visibleButton.getAttribute("tabindex")).toBe("2");
+    expect(visibleButton.hasAttribute("data-embla-tabindex")).toBe(false);
+  });
+
+  it("should not mutate descendants that are already out of the tab order", () => {
+    slides[1].innerHTML = `
+      <button type="button" tabindex="-1">Already Untabbable</button>
+    `;
+
+    embla = EmblaCarousel(container, {}, [A11y()]);
+    const a11yPlugin = embla.plugins().a11y;
+
+    vi.spyOn(embla, "slidesInView").mockReturnValue([0]);
+    a11yPlugin.update();
+
+    const button = slides[1].querySelector("button")!;
+
+    expect(slides[1].getAttribute("aria-hidden")).toBe("true");
+    expect(button.getAttribute("tabindex")).toBe("-1");
+    expect(button.hasAttribute("data-embla-tabindex")).toBe(false);
   });
 
   it("should announce slide changes", () => {
@@ -175,16 +258,26 @@ describe("A11y Plugin", () => {
   });
 
   it("should remove all ARIA attributes and live region on destroy", () => {
+    slides[1].innerHTML = `<button type="button" tabindex="3">Hidden Button</button>`;
     embla = EmblaCarousel(container, {}, [A11y()]);
+    const a11yPlugin = embla.plugins().a11y;
+
+    vi.spyOn(embla, "slidesInView").mockReturnValue([0]);
+    a11yPlugin.update();
 
     // Verify live region exists
     expect(container.querySelector(".embla__live-region")).not.toBeNull();
+    expect(slides[1].querySelector("button")?.getAttribute("tabindex")).toBe("-1");
 
     // Destroy carousel
     embla.destroy();
 
     // Live region should be removed
     expect(container.querySelector(".embla__live-region")).toBeNull();
+    expect(slides[1].querySelector("button")?.getAttribute("tabindex")).toBe("3");
+    expect(
+      slides[1].querySelector("button")?.hasAttribute("data-embla-tabindex"),
+    ).toBe(false);
   });
 
   // New tests for respecting user-provided attributes
@@ -217,10 +310,36 @@ describe("A11y Plugin", () => {
     slides[1].setAttribute("aria-hidden", "false"); // This should be changed
 
     embla = EmblaCarousel(container, {}, [A11y()]);
+    const a11yPlugin = embla.plugins().a11y;
+
+    vi.spyOn(embla, "slidesInView").mockReturnValue([0]);
+    a11yPlugin.update();
 
     // aria-hidden should be set based on the carousel state, regardless of initial values
-    expect(slides[0].getAttribute("aria-hidden")).toBe("false");
+    expect(slides[0].hasAttribute("aria-hidden")).toBe(false);
     expect(slides[1].getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("should remove invalid slide set position attributes", () => {
+    slides[0].setAttribute("aria-setsize", "3");
+    slides[0].setAttribute("aria-posinset", "1");
+
+    embla = EmblaCarousel(container, {}, [A11y()]);
+
+    expect(slides[0].hasAttribute("aria-setsize")).toBe(false);
+    expect(slides[0].hasAttribute("aria-posinset")).toBe(false);
+  });
+
+  it("should preserve user-provided set position attributes for non-group roles", () => {
+    slides[0].setAttribute("role", "listitem");
+    slides[0].setAttribute("aria-setsize", "3");
+    slides[0].setAttribute("aria-posinset", "1");
+
+    embla = EmblaCarousel(container, {}, [A11y()]);
+
+    expect(slides[0].getAttribute("role")).toBe("listitem");
+    expect(slides[0].getAttribute("aria-setsize")).toBe("3");
+    expect(slides[0].getAttribute("aria-posinset")).toBe("1");
   });
 
   // Tests for developer warnings

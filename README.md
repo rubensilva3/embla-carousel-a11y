@@ -68,8 +68,8 @@ This plugin implements the following accessibility features:
 - Adds `aria-roledescription="carousel"` to identify it as a carousel
 - Adds proper `aria-label` (or respects existing labels)
 - Adds `role="group"` and `aria-roledescription="slide"` to slides
-- Applies `aria-hidden="true"` to non-visible slides
-- Sets `aria-setsize` and `aria-posinset` for proper slide position information
+- Applies `aria-hidden="true"` only to slides outside the current viewport
+- Sets hidden slide descendants to `tabindex="-1"` and restores prior tabindex values when slides re-enter view
 
 ### Live Region for Announcements
 
